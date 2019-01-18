@@ -2,8 +2,20 @@ import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import { injectIntl, intlShape } from 'react-intl';
 import classNames from 'classnames';
-import { txIsRequested, LINE_ITEM_NIGHT, LINE_ITEM_DAY, propTypes } from '../../util/types';
-import { ensureListing, ensureTransaction, ensureUser } from '../../util/data';
+import {
+  txHasBeenAccepted,
+  txHasFirstReview,
+  txIsAccepted,
+  txIsCanceled,
+  txIsCompleted,
+  txIsDeclined,
+  txIsEnquired,
+  txIsExpired,
+  txIsRequested,
+  txIsReviewed,
+} from '../../util/transaction';
+import { LINE_ITEM_NIGHT, LINE_ITEM_DAY, propTypes } from '../../util/types';
+import { ensureListing, ensureTransaction, ensureUser, userDisplayName } from '../../util/data';
 import { isMobileSafari } from '../../util/userAgent';
 import { formatMoney } from '../../util/currency';
 import { AvatarMedium, AvatarLarge, ResponsiveImage, ReviewModal } from '../../components';
@@ -11,19 +23,39 @@ import { SendMessageForm } from '../../forms';
 import config from '../../config';
 
 // These are internal components that make this file more readable.
-import {
-  AddressLinkMaybe,
-  BookingPanelMaybe,
-  BreakdownMaybe,
-  DetailCardHeadingsMaybe,
-  FeedSection,
-  SaleActionButtonsMaybe,
-  TransactionPageTitle,
-  TransactionPageMessage,
-  displayNames,
-} from './TransactionPanel.helpers';
+import AddressLinkMaybe from './AddressLinkMaybe';
+import BookingPanelMaybe from './BookingPanelMaybe';
+import BreakdownMaybe from './BreakdownMaybe';
+import DetailCardHeadingsMaybe from './DetailCardHeadingsMaybe';
+import FeedSection from './FeedSection';
+import SaleActionButtonsMaybe from './SaleActionButtonsMaybe';
+import PanelHeading from './PanelHeading';
 
 import css from './TransactionPanel.css';
+
+// Helper function to get display names for different roles
+const displayNames = (currentUser, currentProvider, currentCustomer, bannedUserDisplayName) => {
+  const authorDisplayName = userDisplayName(currentProvider, bannedUserDisplayName);
+  const customerDisplayName = userDisplayName(currentCustomer, bannedUserDisplayName);
+
+  let otherUserDisplayName = '';
+  const currentUserIsCustomer =
+    currentUser.id && currentCustomer.id && currentUser.id.uuid === currentCustomer.id.uuid;
+  const currentUserIsProvider =
+    currentUser.id && currentProvider.id && currentUser.id.uuid === currentProvider.id.uuid;
+
+  if (currentUserIsCustomer) {
+    otherUserDisplayName = authorDisplayName;
+  } else if (currentUserIsProvider) {
+    otherUserDisplayName = customerDisplayName;
+  }
+
+  return {
+    authorDisplayName,
+    customerDisplayName,
+    otherUserDisplayName,
+  };
+};
 
 export class TransactionPanelComponent extends Component {
   constructor(props) {
@@ -148,6 +180,17 @@ export class TransactionPanelComponent extends Component {
     const customerLoaded = !!currentCustomer.id;
     const isCustomerBanned = customerLoaded && currentCustomer.attributes.banned;
     const canShowSaleButtons = isProvider && txIsRequested(currentTransaction) && !isCustomerBanned;
+    const panelHeadingInfo = {
+      isEnquired: txIsEnquired(currentTransaction),
+      isRequested: txIsRequested(currentTransaction),
+      isAccepted: txIsAccepted(currentTransaction),
+      isDeclined: txIsDeclined(currentTransaction) || txIsExpired(currentTransaction),
+      isCanceled: txIsCanceled(currentTransaction),
+      isDelivered:
+        txHasFirstReview(currentTransaction) ||
+        txIsReviewed(currentTransaction) ||
+        txIsCompleted(currentTransaction),
+    };
 
     const bannedUserDisplayName = intl.formatMessage({
       id: 'TransactionPanel.bannedUserDisplayName',
@@ -163,6 +206,8 @@ export class TransactionPanelComponent extends Component {
       bannedUserDisplayName
     );
 
+    const { publicData = {}, geolocation } = currentListing.attributes;
+    const location = publicData.location || {};
     const listingTitle = currentListing.attributes.deleted
       ? deletedListingTitle
       : currentListing.attributes.title;
@@ -191,7 +236,7 @@ export class TransactionPanelComponent extends Component {
       <SaleActionButtonsMaybe
         rootClassName={actionButtonClasses}
         canShowButtons={canShowSaleButtons}
-        transaction={currentTransaction}
+        transactionId={currentTransaction.id}
         acceptInProgress={acceptInProgress}
         declineInProgress={declineInProgress}
         acceptSaleError={acceptSaleError}
@@ -239,28 +284,23 @@ export class TransactionPanelComponent extends Component {
               </div>
             ) : null}
 
-            <TransactionPageTitle
-              transaction={currentTransaction}
-              customerDisplayName={customerDisplayName}
-              currentListing={currentListing}
-              listingTitle={listingTitle}
+            <PanelHeading
+              panelHeadingInfo={panelHeadingInfo}
               transactionRole={transactionRole}
-            />
-            <TransactionPageMessage
-              transaction={currentTransaction}
-              authorDisplayName={authorDisplayName}
-              customerDisplayName={customerDisplayName}
-              listingDeleted={listingDeleted}
+              providerName={authorDisplayName}
+              customerName={customerDisplayName}
               isCustomerBanned={isCustomerBanned}
-              transactionRole={transactionRole}
+              listingId={currentListing.id && currentListing.id.uuid}
+              listingTitle={listingTitle}
+              listingDeleted={listingDeleted}
             />
 
             <div className={css.bookingDetailsMobile}>
               <div className={css.addressMobileWrapper}>
                 <AddressLinkMaybe
-                  transaction={currentTransaction}
-                  transactionRole={transactionRole}
-                  currentListing={currentListing}
+                  location={location}
+                  geolocation={geolocation}
+                  showAddress={isCustomer && txHasBeenAccepted(currentTransaction)}
                 />
               </div>
               <BreakdownMaybe transaction={currentTransaction} transactionRole={transactionRole} />
@@ -314,15 +354,16 @@ export class TransactionPanelComponent extends Component {
               ) : null}
 
               <DetailCardHeadingsMaybe
-                transaction={currentTransaction}
-                transactionRole={transactionRole}
-                listing={currentListing}
+                showDetailCardHeadings={isCustomer && !txIsEnquired(currentTransaction)}
                 listingTitle={listingTitle}
                 subTitle={bookingSubTitle}
+                location={location}
+                geolocation={geolocation}
+                showAddress={isCustomer && txHasBeenAccepted(currentTransaction)}
               />
               <BookingPanelMaybe
                 authorDisplayName={authorDisplayName}
-                transaction={currentTransaction}
+                isEnquiry={txIsEnquired(currentTransaction)}
                 transactionRole={transactionRole}
                 listing={currentListing}
                 listingTitle={listingTitle}
